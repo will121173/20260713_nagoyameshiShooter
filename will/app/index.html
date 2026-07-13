@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>名古屋めしシューティング</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="screen-title" class="screen">
+        <h1 class="title">名古屋めしシューティング</h1>
+        <p class="subtitle">味噌カツ弾でよそもんを撃ち落とせ</p>
+        <p class="hint">←→ / A D 移動　Space / Z 発射</p>
+        <button id="btn-start" type="button">START（Space）</button>
+      </div>
+
+      <div id="screen-playing" class="screen hidden">
+        <div id="hud">
+          <span id="hud-score">SCORE 0</span>
+          <span id="hud-time">TIME 60</span>
+          <span id="hud-life">LIFE ❤️❤️❤️</span>
+        </div>
+        <canvas id="game" width="480" height="640"></canvas>
+      </div>
+
+      <div id="screen-gameover" class="screen hidden">
+        <h2 class="gameover-title">腹減った… GAME OVER</h2>
+        <p id="final-score" class="final-score">SCORE 0</p>
+        <button id="btn-retry" type="button">もう一杯（R）</button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

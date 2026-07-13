@@ -1,0 +1,105 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family: "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    Meiryo, sans-serif;
+  background: #1a0c08;
+  color: #fff8f0;
+}
+
+#app {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, #2a1510 0%, #c45c26 100%);
+}
+
+.screen {
+  width: min(100vw, 520px);
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.title {
+  margin: 0 0 12px;
+  font-size: clamp(1.6rem, 5vw, 2.2rem);
+  letter-spacing: 0.04em;
+  color: #e8b84a;
+  text-shadow: 0 2px 0 #2a1510;
+}
+
+.subtitle {
+  margin: 0 0 28px;
+  font-size: 1rem;
+  opacity: 0.95;
+}
+
+.hint {
+  margin: 0 0 20px;
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+button {
+  appearance: none;
+  border: 2px solid #e8b84a;
+  background: #2a1510;
+  color: #fff8f0;
+  font: inherit;
+  font-size: 1.1rem;
+  padding: 12px 28px;
+  cursor: pointer;
+  letter-spacing: 0.06em;
+}
+
+button:hover,
+button:focus-visible {
+  background: #e8b84a;
+  color: #2a1510;
+  outline: none;
+}
+
+#hud {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  color: #fff8f0;
+}
+
+#game {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  height: auto;
+  margin: 0 auto;
+  border: 2px solid #e8b84a;
+  background: #2a1510;
+  image-rendering: pixelated;
+}
+
+.gameover-title {
+  margin: 0 0 16px;
+  font-size: 1.5rem;
+  color: #d64545;
+}
+
+.final-score {
+  margin: 0 0 28px;
+  font-size: 1.4rem;
+  color: #e8b84a;
+}
