@@ -11,7 +11,13 @@ const CONFIG = {
   // 画面・基本設定
   width: 480,
   height: 720,
-  startLives: 3,
+
+  // HP設定（P1/P2共有のHPゲージ）
+  // 「なかなか死なない」バランス：被弾ダメージは控えめ、撃破で回復。
+  maxHp: 100,        // HP上限＆初期値
+  damageBullet: 6,   // 敵弾に当たったときのダメージ
+  damageBody: 10,    // 敵に体当たりされたときのダメージ
+  invincibleMs: 800, // 被弾後の無敵時間(ms)。連続ダメージを防ぐ
 
   // 背景スクロール速度（星背景）
   starSpeed: 2,
@@ -140,33 +146,34 @@ const INITIAL_WEAPON = 'tofu';
  * dropRate    : ドロップ確率(0〜1)
  * move        : 'straight'|'zigzag'|'dash'|'hover'|'boss' 動きパターン(engine.jsで解釈)
  * canShoot    : 自機方向に弾を撃つか
+ * heal        : 撃破時に回復するHP量（大きいほど死ににくい）
  * boss        : ボスフラグ（任意）
  */
 const ENEMIES = {
   misokatsu: {
     key: 'misokatsu', name: '味噌カツくん', icon: '🍖',
-    size: 34, hp: 2, score: 100, speed: 2,
+    size: 34, hp: 2, score: 100, speed: 2, heal: 8,
     dropWeapon: 'miso', dropRate: 0.5, move: 'straight', canShoot: false,
   },
   kishimen: {
     key: 'kishimen', name: 'きしめん忍者', icon: '🍥',
-    size: 30, hp: 2, score: 120, speed: 2.2,
+    size: 30, hp: 2, score: 120, speed: 2.2, heal: 8,
     dropWeapon: 'kishimen', dropRate: 0.5, move: 'zigzag', canShoot: false,
   },
   tebasaki: {
     key: 'tebasaki', name: '手羽先ライダー', icon: '🍗',
-    size: 32, hp: 2, score: 150, speed: 3.2,
+    size: 32, hp: 2, score: 150, speed: 3.2, heal: 10,
     dropWeapon: 'tebasaki', dropRate: 0.5, move: 'dash', canShoot: false,
   },
   tenmusu: {
     key: 'tenmusu', name: '天むすボンバー', icon: '🍙',
-    size: 34, hp: 3, score: 180, speed: 1.8,
+    size: 34, hp: 3, score: 180, speed: 1.8, heal: 12,
     dropWeapon: 'tenmusu', dropRate: 0.6, move: 'hover', canShoot: true,
   },
   // ボス：名古屋コーチンキング
   cochin: {
     key: 'cochin', name: '名古屋コーチンキング', icon: '🐔',
-    size: 96, hp: 40, score: 2000, speed: 1.2,
+    size: 96, hp: 40, score: 2000, speed: 1.2, heal: 30,
     dropWeapon: null, dropRate: 0, move: 'boss', canShoot: true, boss: true,
   },
 };
@@ -195,6 +202,8 @@ const PLAYERS = [
   },
   {
     id: 'P2', color: '#ff8a65', icon: '🔴',
+    // ai: true にすると自動操縦（COM）になる。false/削除で手動操作に戻せる。
+    ai: true,
     keys: { up: 'w', down: 's', left: 'a', right: 'd', fire: 'Shift' },
     start: { x: CONFIG.width * 0.65, y: CONFIG.height - 80 },
   },

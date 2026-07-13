@@ -40,7 +40,7 @@ class Game {
     this.drops = [];
     this.explosions = [];
     this.score = 0;
-    this.lives = CONFIG.startLives;
+    this.hp = CONFIG.maxHp;
     this.spawnTimer = 0;
     this.spawnInterval = 900;  // ms。徐々に短くして難易度上昇
     this.elapsed = 0;
@@ -80,10 +80,11 @@ class Game {
     this._updateStars();
     this._handleSpawn(now, dt);
 
-    // 自機
+    // 自機（P2など ai:true のプレイヤーは自動操縦の合成入力を使う）
     for (const p of this.players) {
-      p.update(Input);
-      const fired = p.tryFire(now, Input);
+      const input = p.def.ai ? this._aiInput(p) : Input;
+      p.update(input);
+      const fired = p.tryFire(now, input);
       if (fired) {
         this.bullets.push(...fired.bullets);
         if (fired.weapon.voice) Audio.speak(fired.weapon.voice);
@@ -112,8 +113,9 @@ class Game {
     this.drops = this.drops.filter((d) => !d.dead);
     this.explosions = this.explosions.filter((ex) => !ex.dead);
 
-    // 終了判定
-    if (this.lives <= 0) {
+    // 終了判定（HPが尽きたらゲームオーバー）
+    if (this.hp <= 0) {
+      this.hp = 0;
       this.state = 'gameover';
       Audio.speak('ゲームオーバー', { force: true });
     }
@@ -124,6 +126,63 @@ class Game {
       s.y += CONFIG.starSpeed * (s.s / 2);
       if (s.y > CONFIG.height) { s.y = 0; s.x = Math.random() * CONFIG.width; }
     }
+  }
+
+  /*
+   * P2などの自動操縦AI。
+   * 優先度: ①敵弾を回避 → ②近くの武器アイテムを回収 → ③最寄りの敵に照準
+   * Playerが読む input(isDown) と同じ形の合成入力を返すので、
+   * Player側のロジックを変えずに人間↔COMを切り替えられる。
+   */
+  _aiInput(p) {
+    const k = p.def.keys;
+    const pressed = {};
+    const press = (key) => { if (key) pressed[key] = true; };
+
+    const homeY = CONFIG.height * 0.72; // 基本の待機高さ（画面下部）
+    let targetX = p.x;
+
+    // ① 一番近い敵弾（危険）を探す
+    let threat = null, threatDist = Infinity;
+    for (const b of this.enemyBullets) {
+      const dist = Math.hypot(b.x - p.x, b.y - p.y);
+      if (dist < threatDist && dist < 95) { threat = b; threatDist = dist; }
+    }
+
+    if (threat) {
+      // 弾から水平に逃げる
+      targetX = p.x + (threat.x < p.x ? 45 : -45);
+    } else {
+      // ② 手近な武器アイテムがあれば回収に向かう
+      let drop = null, dd = Infinity;
+      for (const d of this.drops) {
+        const dist = Math.abs(d.x - p.x) + Math.abs(d.y - p.y);
+        if (dist < dd) { dd = dist; drop = d; }
+      }
+      if (drop && Math.abs(drop.y - p.y) < 240) {
+        targetX = drop.x;
+      } else {
+        // ③ 自分より上にいる最寄りの敵に照準を合わせる
+        let enemy = null, ed = Infinity;
+        for (const e of this.enemies) {
+          if (e.y > p.y) continue;
+          const dist = Math.hypot(e.x - p.x, e.y - p.y);
+          if (dist < ed) { ed = dist; enemy = e; }
+        }
+        if (enemy) targetX = enemy.x;
+      }
+    }
+
+    // 水平移動（少し不感帯を設けてプルプル震えを防ぐ）
+    if (targetX < p.x - 6) press(k.left);
+    else if (targetX > p.x + 6) press(k.right);
+    // 垂直移動（待機高さを維持）
+    if (p.y < homeY - 12) press(k.down);
+    else if (p.y > homeY + 12) press(k.up);
+
+    press(k.fire); // 常に発射
+
+    return { isDown: (key) => !!pressed[key] };
   }
 
   _handleSpawn(now, dt) {
@@ -202,7 +261,7 @@ class Game {
     for (const b of this.enemyBullets) {
       for (const p of this.players) {
         if (!p.alive || p.isInvincible(now) || b.dead) continue;
-        if (Util.hit(b, p)) { b.dead = true; this._onPlayerHit(p, now); }
+        if (Util.hit(b, p)) { b.dead = true; this._onPlayerHit(p, now, CONFIG.damageBullet); }
       }
     }
 
@@ -210,7 +269,7 @@ class Game {
     for (const e of this.enemies) {
       for (const p of this.players) {
         if (!p.alive || p.isInvincible(now)) continue;
-        if (Util.hit(e, p)) this._onPlayerHit(p, now);
+        if (Util.hit(e, p)) this._onPlayerHit(p, now, CONFIG.damageBody);
       }
     }
 
@@ -233,6 +292,8 @@ class Game {
 
   _onEnemyKilled(e) {
     this.score += e.score;
+    // 敵を倒すとHP回復（倒し続ければなかなか死なない）
+    this.hp = Math.min(CONFIG.maxHp, this.hp + (e.def.heal || 0));
     this._spawnExplosion(e.x, e.y, e.boss ? 90 : 30);
     Audio.speakRandom(e.boss ? VOICES.bossDown : VOICES.defeat);
 
@@ -246,11 +307,10 @@ class Game {
     }
   }
 
-  _onPlayerHit(player, now) {
-    player.invincibleUntil = now + 1500; // 1.5秒無敵
-    this.lives -= 1;
+  _onPlayerHit(player, now, damage) {
+    player.invincibleUntil = now + CONFIG.invincibleMs;
+    this.hp -= damage;                 // 共有HPを減らす
     Audio.speakRandom(VOICES.damage);
-    // 残機0で自機を非表示にする等はlives管理で対応（ここでは共有ライフ制）
   }
 
   // ---- 描画 ----
@@ -291,13 +351,29 @@ class Game {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     ctx.fillText(`SCORE ${this.score}`, 10, 8);
-    ctx.fillText(`LIVES ${'❤️'.repeat(Math.max(0, this.lives))}`, 10, 30);
+
+    // HPゲージ
+    const barX = 10, barY = 32, barW = 160, barH = 14;
+    const ratio = Util.clamp(this.hp / CONFIG.maxHp, 0, 1);
+    ctx.fillStyle = '#333';
+    ctx.fillRect(barX, barY, barW, barH);
+    // HP残量で色を変える（緑→黄→赤）
+    ctx.fillStyle = ratio > 0.5 ? '#4caf50' : ratio > 0.25 ? '#ffc107' : '#f44336';
+    ctx.fillRect(barX, barY, barW * ratio, barH);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(barX, barY, barW, barH);
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px sans-serif';
+    ctx.fillText(`HP ${Math.max(0, Math.ceil(this.hp))}/${CONFIG.maxHp}`, barX + barW + 8, barY + 1);
+    ctx.font = '16px sans-serif';
 
     // 各プレイヤーの現在武器
     ctx.textAlign = 'right';
     this.players.forEach((p, i) => {
       ctx.fillStyle = p.color;
-      ctx.fillText(`${p.id}:${p.weapon.icon}${p.weapon.name}`, CONFIG.width - 10, 8 + i * 22);
+      const tag = p.def.ai ? `${p.id}(COM)` : p.id;
+      ctx.fillText(`${tag}:${p.weapon.icon}${p.weapon.name}`, CONFIG.width - 10, 8 + i * 22);
     });
   }
 
@@ -309,7 +385,7 @@ class Game {
     ctx.fillText('名古屋飯シューティング', CONFIG.width / 2, CONFIG.height / 2 - 80);
     ctx.font = '16px sans-serif';
     ctx.fillText('P1: 矢印キー + Space', CONFIG.width / 2, CONFIG.height / 2 - 20);
-    ctx.fillText('P2: WASD + Shift', CONFIG.width / 2, CONFIG.height / 2 + 6);
+    ctx.fillText('P2: COM（自動操縦）', CONFIG.width / 2, CONFIG.height / 2 + 6);
     ctx.font = 'bold 20px sans-serif';
     ctx.fillStyle = '#ffcc33';
     ctx.fillText('Enter でスタート', CONFIG.width / 2, CONFIG.height / 2 + 60);
