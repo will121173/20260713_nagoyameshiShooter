@@ -193,6 +193,25 @@
   const HIT_FLASH_MAX_ALPHA = 0.5;
 
   // ==========================================================
+  // パチンコ風 煽り演出パラメータ(純装飾。本編ロジックには不干渉)
+  // ==========================================================
+  const COMBO_TIMEOUT = 2;
+  const CHANCE_BANNER_PROB = 0.05;
+
+  const BANNER_FADE_EDGE = 0.2;
+  const BANNER_BIG_SIZE = 58;
+  const BANNER_SMALL_SIZE = 32;
+
+  const STROBE_OVERLAY_ALPHA = 0.1;
+
+  const SHAKE_BOSS_MAGNITUDE = 8;
+  const SHAKE_JACKPOT_MAGNITUDE = 11;
+
+  const CONFETTI_COUNT = 44;
+  const CONFETTI_GRAVITY = 90;
+  const CONFETTI_COLORS = ['#ff4d6d', '#ffd166', '#06d6a0', '#4d96ff', '#c77dff', '#ffffff'];
+
+  // ==========================================================
   // ボス:金のシャチホコ
   // BOSS_APPEAR_TIME 秒経過で登場。登場すると updateEnemySpawning の
   // game.boss ガードにより雑魚スポーンが自動停止する。
@@ -239,6 +258,14 @@
     effects: [],
     boss: null,
     hitFlashTimer: 0,
+    combo: 0,
+    comboTimer: 0,
+    banners: [],
+    strobeTimer: 0,
+    shakeTimer: 0,
+    shakeMagnitude: 0,
+    shakeDuration: 0,
+    confetti: [],
     // リザルトへ遷移した理由。'clear'(ボス撃破) | 'gameover'(残機0) | null
     resultReason: null,
     // リザルト画面内のフェーズ。'initials'(イニシャル入力) | 'ranking'(結果表示) | null
@@ -271,6 +298,14 @@
     game.effects = [];
     game.boss = null;
     game.hitFlashTimer = 0;
+    game.combo = 0;
+    game.comboTimer = 0;
+    game.banners = [];
+    game.strobeTimer = 0;
+    game.shakeTimer = 0;
+    game.shakeMagnitude = 0;
+    game.shakeDuration = 0;
+    game.confetti = [];
     game.resultReason = null;
     game.resultPhase = null;
     game.initials = ['A', 'A', 'A'];
@@ -398,6 +433,7 @@
     game.player.invincibleTimer = PLAYER_INVINCIBLE_DURATION;
     game.hitFlashTimer = HIT_FLASH_DURATION;
     playHitSound();
+    triggerShake(5, 0.2);
   }
 
   function drawPlayer(ctx) {
@@ -616,6 +652,8 @@
       text: '完食!',
       timer: POPUP_DURATION,
     });
+    registerCombo();
+    if (Math.random() < CHANCE_BANNER_PROB) addBanner('チャンス!!', 0.9, false);
   }
 
   function resolvePlayerBulletHits() {
@@ -724,6 +762,190 @@
   }
 
   // ==========================================================
+  // パチンコ風 煽り演出(コンボ/バナー/ストロボ/シェイク/紙吹雪)
+  // 本編(移動・当たり判定・スコア・状態遷移)には干渉しない純装飾。
+  // 既存のタイマー配列 update/draw 分割パターンに合わせている。
+  // 時間依存アニメは状態非依存に回したいので performance.now を使う。
+  // ==========================================================
+  function registerCombo() {
+    game.combo += 1;
+    game.comboTimer = COMBO_TIMEOUT;
+    if (game.combo % 5 === 0) {
+      addBanner(`COMBO ${game.combo} CHANCE!!`, 1.3, false);
+      triggerShake(4, 0.25);
+    }
+  }
+
+  function updateComboTimer(dt) {
+    if (game.comboTimer > 0) {
+      game.comboTimer -= dt;
+      if (game.comboTimer <= 0) {
+        game.comboTimer = 0;
+        game.combo = 0;
+      }
+    }
+  }
+
+  function drawCombo(ctx) {
+    if (game.combo < 2) return;
+    const t = performance.now() / 1000;
+    ctx.save();
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    const size = 22 + Math.sin(t * 12) * 2;
+    ctx.font = `bold ${size}px sans-serif`;
+    ctx.fillStyle = `hsl(${(t * 220) % 360}, 90%, 62%)`;
+    ctx.fillText(`${game.combo} COMBO!!`, CANVAS_WIDTH - 12, 12);
+    ctx.restore();
+  }
+
+  function addBanner(text, duration, big) {
+    game.banners.push({ text, timer: duration, duration, big: !!big });
+  }
+
+  function updateBanners(dt) {
+    for (let i = game.banners.length - 1; i >= 0; i--) {
+      const b = game.banners[i];
+      b.timer -= dt;
+      if (b.timer <= 0) game.banners.splice(i, 1);
+    }
+  }
+
+  function drawBanners(ctx) {
+    if (game.banners.length === 0) return;
+    const t = performance.now() / 1000;
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const count = game.banners.length;
+    for (let i = 0; i < count; i++) {
+      const b = game.banners[i];
+      const edge = Math.min(b.timer, b.duration - b.timer);
+      const alpha = clamp(edge / BANNER_FADE_EDGE, 0, 1);
+      const baseSize = b.big ? BANNER_BIG_SIZE : BANNER_SMALL_SIZE;
+      const fontSize = baseSize * (1 + Math.sin(t * 14) * 0.08);
+      const hue = (t * 320 + i * 50) % 360;
+      const y = CANVAS_HEIGHT / 2 + (i - (count - 1) / 2) * (baseSize * 1.25);
+      ctx.globalAlpha = alpha;
+      ctx.font = `bold ${fontSize}px sans-serif`;
+      ctx.lineWidth = Math.max(3, fontSize * 0.08);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+      ctx.strokeText(b.text, CANVAS_WIDTH / 2, y);
+      ctx.fillStyle = `hsl(${hue}, 100%, 60%)`;
+      ctx.fillText(b.text, CANVAS_WIDTH / 2, y);
+    }
+    ctx.restore();
+  }
+
+  function triggerStrobe(duration) {
+    game.strobeTimer = Math.max(game.strobeTimer, duration);
+  }
+
+  function updateStrobe(dt) {
+    if (game.strobeTimer > 0) {
+      game.strobeTimer = Math.max(0, game.strobeTimer - dt);
+    }
+  }
+
+  function drawStrobe(ctx) {
+    if (game.strobeTimer <= 0) return;
+    const t = performance.now() / 1000;
+    const hue = (t * 420) % 360;
+    ctx.save();
+    // 視認性を潰さないよう全画面は薄く、主張は外周の光る枠に寄せる
+    ctx.globalAlpha = STROBE_OVERLAY_ALPHA;
+    ctx.fillStyle = `hsl(${hue}, 100%, 55%)`;
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.globalAlpha = 0.9;
+    for (let k = 0; k < 4; k++) {
+      ctx.strokeStyle = `hsl(${(hue + k * 40) % 360}, 100%, 60%)`;
+      ctx.lineWidth = 14 - k * 3;
+      const inset = 2 + k * 5;
+      ctx.strokeRect(inset, inset, CANVAS_WIDTH - inset * 2, CANVAS_HEIGHT - inset * 2);
+    }
+    ctx.restore();
+  }
+
+  function triggerShake(magnitude, duration) {
+    if (magnitude > game.shakeMagnitude) game.shakeMagnitude = magnitude;
+    if (duration > game.shakeTimer) game.shakeTimer = duration;
+    if (duration > game.shakeDuration) game.shakeDuration = duration;
+  }
+
+  function updateShake(dt) {
+    if (game.shakeTimer > 0) {
+      game.shakeTimer = Math.max(0, game.shakeTimer - dt);
+      if (game.shakeTimer === 0) {
+        game.shakeMagnitude = 0;
+        game.shakeDuration = 0;
+      }
+    }
+  }
+
+  function currentShakeOffset() {
+    if (game.shakeTimer <= 0 || game.shakeMagnitude <= 0) return { x: 0, y: 0 };
+    const decay = game.shakeDuration > 0 ? game.shakeTimer / game.shakeDuration : 1;
+    const mag = game.shakeMagnitude * decay;
+    return {
+      x: (Math.random() * 2 - 1) * mag,
+      y: (Math.random() * 2 - 1) * mag,
+    };
+  }
+
+  function spawnConfetti() {
+    for (let i = 0; i < CONFETTI_COUNT; i++) {
+      game.confetti.push({
+        x: randomRange(0, CANVAS_WIDTH),
+        y: randomRange(-CANVAS_HEIGHT * 0.4, -10),
+        vx: randomRange(-30, 30),
+        vy: randomRange(40, 120),
+        size: randomRange(6, 13),
+        color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
+        angle: randomRange(0, Math.PI * 2),
+        spin: randomRange(-8, 8),
+        sway: randomRange(20, 50),
+        swayPhase: randomRange(0, Math.PI * 2),
+        age: 0,
+        life: randomRange(2, 3.5),
+      });
+    }
+  }
+
+  function updateConfetti(dt) {
+    for (let i = game.confetti.length - 1; i >= 0; i--) {
+      const c = game.confetti[i];
+      c.age += dt;
+      c.vy += CONFETTI_GRAVITY * dt;
+      c.x += (c.vx + Math.sin(c.age * 4 + c.swayPhase) * c.sway) * dt;
+      c.y += c.vy * dt;
+      c.angle += c.spin * dt;
+      if (c.age >= c.life || c.y > CANVAS_HEIGHT + 20) {
+        game.confetti.splice(i, 1);
+      }
+    }
+  }
+
+  function drawConfetti(ctx) {
+    for (const c of game.confetti) {
+      const alpha = clamp(1 - c.age / c.life, 0, 1);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(c.x, c.y);
+      ctx.rotate(c.angle);
+      ctx.fillStyle = c.color;
+      ctx.fillRect(-c.size / 2, -c.size / 4, c.size, c.size / 2);
+      ctx.restore();
+    }
+  }
+
+  function playJackpotFanfare() {
+    playTone(523, 523, 0.12, 'square', 0.08, 0);
+    playTone(659, 659, 0.12, 'square', 0.08, 0.1);
+    playTone(784, 784, 0.12, 'square', 0.08, 0.2);
+    playTone(1047, 1047, 0.35, 'square', 0.09, 0.3);
+  }
+
+  // ==========================================================
   // ボス
   // 出現時に場面をボス戦へ集中させるため既存の雑魚・敵弾をクリアする。
   // 弾は既存の game.enemyBullets へ push すれば updateEnemyBullets が
@@ -742,6 +964,9 @@
       pattern: 'A',
       patternTimer: BOSS_PATTERN_INTERVAL,
     };
+    addBanner('激熱リーチ!!!!', 2, true);
+    triggerStrobe(2);
+    triggerShake(SHAKE_BOSS_MAGNITUDE, 0.5);
   }
 
   function fireBoss3way() {
@@ -780,7 +1005,13 @@
 
   function defeatBoss() {
     playDefeatSound();
+    playJackpotFanfare();
     spawnDefeatEffect('🐟', game.boss.x, game.boss.y, game.boss.size);
+    addBanner('大当たり!!!!!', 2.5, true);
+    triggerStrobe(2.5);
+    triggerShake(SHAKE_JACKPOT_MAGNITUDE, 0.6);
+    spawnConfetti();
+    registerCombo();
     game.score += BOSS_DEFEAT_KCAL;
     game.boss = null;
     game.resultReason = 'clear';
@@ -924,6 +1155,7 @@
     updatePopups(dt);
     updateEffects(dt);
     updateHitFlash(dt);
+    updateComboTimer(dt);
 
     // defeatBoss は既に RESULT へ遷移させるため、ここでは残機切れのみ判定する
     if (game.state === GameState.PLAYING && game.lives <= 0) {
@@ -942,6 +1174,7 @@
     drawEffects(ctx);
     drawPopups(ctx);
     drawHud(ctx);
+    drawCombo(ctx);
     drawHitFlash(ctx);
   }
 
@@ -1030,14 +1263,28 @@
 
   function update(dt) {
     STATE_HANDLERS[game.state].update(dt);
+    // 大当たり演出は RESULT へ遷移した後も見せ続けたいので状態非依存で更新する
+    updateBanners(dt);
+    updateConfetti(dt);
+    updateStrobe(dt);
+    updateShake(dt);
     keys.enterPressed = false;
     keys.upPressed = false;
     keys.downPressed = false;
   }
 
   function draw(ctx) {
+    // 背景はシェイク対象外にして画面端の黒抜けを防ぐ
     drawBackground(ctx);
+    const shake = currentShakeOffset();
+    ctx.save();
+    ctx.translate(shake.x, shake.y);
     STATE_HANDLERS[game.state].draw(ctx);
+    ctx.restore();
+    // 枠の光る演出はシェイクで動かさず画面端に固定する
+    drawStrobe(ctx);
+    drawConfetti(ctx);
+    drawBanners(ctx);
   }
 
   function drawBackground(ctx) {
