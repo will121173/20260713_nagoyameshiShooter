@@ -45,6 +45,7 @@ class Game {
     this.spawnInterval = 900;  // ms。徐々に短くして難易度上昇
     this.elapsed = 0;
     this.bossSpawned = false;
+    this.cutin = null; // ボス登場カットイン中は { key, startAt } が入る
     this.state = 'title'; // 'title' | 'playing' | 'gameover' | 'clear'
     this.lastTime = performance.now();
   }
@@ -60,6 +61,7 @@ class Game {
   start() {
     this.reset();
     this.state = 'playing';
+    BGM.start(); // Enter（ユーザー操作）でBGM開始
     Audio.speak('ゲームスタート！', { force: true });
   }
 
@@ -77,6 +79,19 @@ class Game {
   // ---- 更新 ----
   update(now, dt) {
     this.elapsed += dt;
+
+    // ボス登場カットイン中はゲームを一時停止して演出を見せる
+    if (this.cutin) {
+      this._updateStars(); // 背景だけ動かす
+      if (now - this.cutin.startAt >= CONFIG.cutinMs) {
+        // 演出終了 → ボス本体を登場させる
+        const def = ENEMIES[this.cutin.key];
+        this.enemies.push(new Enemy(def, CONFIG.width / 2));
+        this.cutin = null;
+      }
+      return; // 演出中は他の更新をスキップ
+    }
+
     this._updateStars();
     this._handleSpawn(now, dt);
 
@@ -219,7 +234,8 @@ class Game {
 
   _spawnBoss() {
     this.bossSpawned = true;
-    this.enemies.push(new Enemy(ENEMIES.cochin, CONFIG.width / 2));
+    // まずカットイン演出を開始。ボス本体は演出終了後（update内）で登場する
+    this.cutin = { key: 'cochin', startAt: performance.now() };
     Audio.speak('ボスとうじょう！名古屋コーチンキング！', { force: true });
   }
 
@@ -332,6 +348,9 @@ class Game {
 
     this._drawHUD(ctx);
 
+    // ボス登場カットイン（最前面）
+    if (this.cutin) this._drawCutin(ctx, now);
+
     if (this.state === 'gameover') this._drawCenter(ctx, 'GAME OVER', 'Enterでリトライ');
     if (this.state === 'clear') this._drawCenter(ctx, 'STAGE CLEAR!', 'Enterでリトライ');
   }
@@ -375,6 +394,70 @@ class Game {
       const tag = p.def.ai ? `${p.id}(COM)` : p.id;
       ctx.fillText(`${tag}:${p.weapon.icon}${p.weapon.name}`, CONFIG.width - 10, 8 + i * 22);
     });
+    // BGM状態（Mキーで切替）
+    ctx.fillStyle = '#aaa';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(BGM.muted ? '♪OFF (M)' : '♪ON (M)', CONFIG.width - 10, 8 + this.players.length * 22);
+  }
+
+  /*
+   * ボス登場カットイン演出。
+   * 時間経過で「スライドイン → ホールド → スライドアウト」する。
+   * ENEMIES[key] のデータ（icon/name/catchphrase）を使うので、
+   * 他のボスにも catchphrase を足せば同じ演出を流用できる。
+   */
+  _drawCutin(ctx, now) {
+    const def = ENEMIES[this.cutin.key];
+    const t = now - this.cutin.startAt;
+    const D = CONFIG.cutinMs;
+    const W = CONFIG.width, cy = CONFIG.height / 2;
+
+    // スライド量: 開始で左から入り、終了で右へ抜ける（-1〜0〜+1）
+    const IN = 450, OUT = 450;
+    let slide = 0;
+    if (t < IN) slide = -(1 - t / IN);
+    else if (t > D - OUT) slide = (t - (D - OUT)) / OUT;
+    const dx = slide * W;
+
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // 画面全体を暗転
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, W, CONFIG.height);
+
+    // 中央の赤い帯（演出用レターボックス）
+    const bandH = 210;
+    ctx.fillStyle = 'rgba(140,0,0,0.88)';
+    ctx.fillRect(0, cy - bandH / 2, W, bandH);
+    ctx.fillStyle = '#ffcc33';
+    ctx.fillRect(0, cy - bandH / 2, W, 4);
+    ctx.fillRect(0, cy + bandH / 2 - 4, W, 4);
+
+    // WARNING 点滅
+    if (Math.floor(now / 200) % 2 === 0) {
+      ctx.fillStyle = '#ffdd44';
+      ctx.font = 'bold 24px sans-serif';
+      ctx.fillText('⚠ WARNING ⚠', W / 2, cy - bandH / 2 - 26);
+    }
+
+    // ボスキャラを大きく（左からスライド）
+    ctx.font = '120px sans-serif';
+    ctx.fillText(def.icon, W / 2 + dx, cy - 25);
+
+    // 名前を大きく（右からスライド）
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 32px sans-serif';
+    ctx.fillText(def.name, W / 2 - dx, cy + 58);
+
+    // キャッチフレーズ
+    if (def.catchphrase) {
+      ctx.fillStyle = '#ffe9a8';
+      ctx.font = '16px sans-serif';
+      ctx.fillText(def.catchphrase, W / 2 - dx, cy + 88);
+    }
+    ctx.restore();
   }
 
   _drawTitle(ctx) {
@@ -411,13 +494,14 @@ window.addEventListener('DOMContentLoaded', () => {
   Input.init();
   const game = new Game(document.getElementById('game'));
 
-  // Enterでスタート／リトライ
+  // Enterでスタート／リトライ、MでBGMのON/OFF
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       if (game.state === 'title' || game.state === 'gameover' || game.state === 'clear') {
         game.start();
       }
     }
+    if (e.key === 'm' || e.key === 'M') BGM.toggleMute();
   });
 
   game.loop();

@@ -19,6 +19,9 @@ const CONFIG = {
   damageBody: 10,    // 敵に体当たりされたときのダメージ
   invincibleMs: 800, // 被弾後の無敵時間(ms)。連続ダメージを防ぐ
 
+  // ボス登場カットインの表示時間(ms)。この間はゲームが一時停止する
+  cutinMs: 2600,
+
   // 背景スクロール速度（星背景）
   starSpeed: 2,
   starCount: 80,
@@ -175,6 +178,8 @@ const ENEMIES = {
     key: 'cochin', name: '名古屋コーチンキング', icon: '🐔',
     size: 96, hp: 40, score: 2000, speed: 1.2, heal: 30,
     dropWeapon: null, dropRate: 0, move: 'boss', canShoot: true, boss: true,
+    // カットイン演出用のキャッチフレーズ
+    catchphrase: '名古屋の帝王、ここに見参！',
   },
 };
 
