@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import type { BulletPool } from '../bullets/BulletPool';
 import {
   DEPTH_HITBOX,
   DEPTH_PLAYER,
@@ -9,6 +10,10 @@ import {
   PLAYER_BLINK_INTERVAL_MS,
   PLAYER_EMOJI,
   PLAYER_HITBOX_RADIUS,
+  PLAYER_SHOT_ANGLE_RAD,
+  PLAYER_SHOT_INTERVAL_MS,
+  PLAYER_SHOT_OFFSET_X,
+  PLAYER_SHOT_SPEED,
   PLAYER_SLOW_BODY_ALPHA,
   PLAYER_SLOW_FACTOR,
   PLAYER_SPEED,
@@ -30,14 +35,18 @@ export class Player extends Phaser.GameObjects.Image {
   private readonly hitboxIndicator: Phaser.GameObjects.Arc;
   private readonly moveKeys: MoveKeys;
   private readonly slowKey: Phaser.Input.Keyboard.Key;
+  private readonly shotKeys: Phaser.Input.Keyboard.Key[];
+  private readonly shotPool: BulletPool;
+  private shotCooldownMs = 0;
 
-  constructor(scene: Phaser.Scene) {
+  constructor(scene: Phaser.Scene, shotPool: BulletPool) {
     super(
       scene,
       PLAYER_START_X,
       PLAYER_START_Y,
       ensureEmojiTexture(scene, PLAYER_EMOJI, PLAYER_TEXTURE_SIZE),
     );
+    this.shotPool = shotPool;
     this.setDepth(DEPTH_PLAYER);
     scene.add.existing(this);
     scene.physics.add.existing(this);
@@ -64,10 +73,11 @@ export class Player extends Phaser.GameObjects.Image {
       right: [keyboard.addKey(codes.RIGHT), keyboard.addKey(codes.D)],
     };
     this.slowKey = keyboard.addKey(codes.SHIFT);
+    this.shotKeys = [keyboard.addKey(codes.Z), keyboard.addKey(codes.SPACE)];
   }
 
   /**
-   * 入力を読んでdeltaベースで移動し、低速中は判定円を表示する
+   * 入力を読んでdeltaベースで移動・射撃し、低速中は判定円を表示する
    * @param deltaMs 前フレームからの経過時間(ms)
    * @param invincibleRemainingMs 無敵の残り時間(ms)。0以下なら通常状態
    */
@@ -93,6 +103,30 @@ export class Player extends Phaser.GameObjects.Image {
       invincibleRemainingMs > 0 &&
       Math.floor(invincibleRemainingMs / PLAYER_BLINK_INTERVAL_MS) % 2 === 0;
     this.setAlpha((blinkOn ? PLAYER_BLINK_ALPHA : 1) * (slow ? PLAYER_SLOW_BODY_ALPHA : 1));
+
+    this.shotCooldownMs = Math.max(0, this.shotCooldownMs - deltaMs);
+    const shooting = this.shotKeys.some((key) => key.isDown);
+    if (shooting && this.shotCooldownMs === 0) {
+      this.shotCooldownMs = PLAYER_SHOT_INTERVAL_MS;
+      this.shotPool.spawn(
+        this.x - PLAYER_SHOT_OFFSET_X,
+        this.y,
+        PLAYER_SHOT_ANGLE_RAD,
+        PLAYER_SHOT_SPEED,
+      );
+      this.shotPool.spawn(
+        this.x + PLAYER_SHOT_OFFSET_X,
+        this.y,
+        PLAYER_SHOT_ANGLE_RAD,
+        PLAYER_SHOT_SPEED,
+      );
+    }
+  }
+
+  /** ゲームオーバー時に自機と判定円を隠す */
+  hide(): void {
+    this.setVisible(false);
+    this.hitboxIndicator.setVisible(false);
   }
 
   /**

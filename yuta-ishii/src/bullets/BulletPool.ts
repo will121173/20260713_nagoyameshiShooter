@@ -1,20 +1,35 @@
 import Phaser from 'phaser';
-import { BULLET_POOL_SIZE, BULLET_TEXTURE_SIZE, DEFAULT_BULLET_EMOJI } from '../config';
 import { ensureEmojiTexture } from '../utils/emojiTexture';
 import { Bullet } from './Bullet';
 
+/** プールの生成設定(敵弾・自機ショットで使い分ける) */
+export type BulletPoolOptions = {
+  /** デフォルトテクスチャにする絵文字 */
+  emoji: string;
+  /** テクスチャの一辺(px) */
+  textureSize: number;
+  /** 当たり判定の円半径(px) */
+  bodyRadius: number;
+  /** プールの最大弾数 */
+  poolSize: number;
+};
+
 export class BulletPool extends Phaser.Physics.Arcade.Group {
-  constructor(scene: Phaser.Scene) {
+  private readonly defaultTextureKey: string;
+  private readonly bodyRadius: number;
+
+  constructor(scene: Phaser.Scene, options: BulletPoolOptions) {
     super(scene.physics.world, scene, {
       classType: Bullet,
-      maxSize: BULLET_POOL_SIZE,
+      maxSize: options.poolSize,
       runChildUpdate: false,
     });
-    const defaultTextureKey = ensureEmojiTexture(scene, DEFAULT_BULLET_EMOJI, BULLET_TEXTURE_SIZE);
+    this.defaultTextureKey = ensureEmojiTexture(scene, options.emoji, options.textureSize);
+    this.bodyRadius = options.bodyRadius;
     // プレイ中の生成コストとGCを避けるため、起動時に全弾を確保しておく
     this.createMultiple({
-      key: defaultTextureKey,
-      quantity: BULLET_POOL_SIZE,
+      key: this.defaultTextureKey,
+      quantity: options.poolSize,
       active: false,
       visible: false,
     });
@@ -29,14 +44,20 @@ export class BulletPool extends Phaser.Physics.Arcade.Group {
    * @param y 発射位置y
    * @param angleRad 進行方向(ラジアン)
    * @param speed 弾速(px/秒)
-   * @param textureKey 弾の見た目(絵文字テクスチャのキー)
+   * @param textureKey 弾の見た目。省略時はプールのデフォルト絵文字
    */
-  spawn(x: number, y: number, angleRad: number, speed: number, textureKey: string): void {
+  spawn(
+    x: number,
+    y: number,
+    angleRad: number,
+    speed: number,
+    textureKey: string = this.defaultTextureKey,
+  ): void {
     const bullet = this.get() as Bullet | null;
     if (!bullet) {
       return;
     }
-    bullet.fire(x, y, angleRad, speed, textureKey);
+    bullet.fire(x, y, angleRad, speed, textureKey, this.bodyRadius);
   }
 
   /** アクティブな弾をすべてプールへ返す(被弾時の全弾消し用) */
