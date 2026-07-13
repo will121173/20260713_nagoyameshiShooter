@@ -2,15 +2,10 @@ import Phaser from 'phaser';
 import {
   BULLET_KILL_MARGIN,
   BULLET_MAX_SPIN_DEG,
-  BULLET_RADIUS,
-  BULLET_TEXTURE_SIZE,
   DEPTH_BULLET,
   GAME_HEIGHT,
   GAME_WIDTH,
 } from '../config';
-
-/** 判定円(半径6px)をテクスチャ中央に合わせるためのオフセット */
-const BODY_OFFSET = BULLET_TEXTURE_SIZE / 2 - BULLET_RADIUS;
 
 export class Bullet extends Phaser.Physics.Arcade.Sprite {
   constructor(scene: Phaser.Scene, x: number, y: number, texture: string) {
@@ -25,14 +20,24 @@ export class Bullet extends Phaser.Physics.Arcade.Sprite {
    * @param angleRad 進行方向(ラジアン)
    * @param speed 弾速(px/秒)
    * @param textureKey 弾の見た目(絵文字テクスチャのキー)
+   * @param bodyRadius 当たり判定の円半径(px)
    */
-  fire(x: number, y: number, angleRad: number, speed: number, textureKey: string): void {
+  fire(
+    x: number,
+    y: number,
+    angleRad: number,
+    speed: number,
+    textureKey: string,
+    bodyRadius: number,
+  ): void {
     if (this.texture.key !== textureKey) {
       this.setTexture(textureKey);
     }
     this.enableBody(true, x, y, true, true);
     if (this.body instanceof Phaser.Physics.Arcade.Body) {
-      this.body.setCircle(BULLET_RADIUS, BODY_OFFSET, BODY_OFFSET);
+      // テクスチャサイズによらず判定円を中央に合わせる
+      const offset = this.width / 2 - bodyRadius;
+      this.body.setCircle(bodyRadius, offset, offset);
     }
     this.setVelocity(Math.cos(angleRad) * speed, Math.sin(angleRad) * speed);
     // 食べ物が宙を舞う感じを出すためランダムに回転させる
