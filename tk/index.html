@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>名古屋飯シューティング</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #06060f;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-family: sans-serif;
+    }
+    #game {
+      background: #0a0a1a;
+      border: 2px solid #333;
+      border-radius: 8px;
+      /* 高DPIでもドット感を保ちつつ拡大 */
+      image-rendering: pixelated;
+      box-shadow: 0 0 30px rgba(0, 0, 0, 0.6);
+    }
+  </style>
+</head>
+<body>
+  <!-- 縦長のゲーム画面。サイズは config.js の CONFIG で決定 -->
+  <canvas id="game"></canvas>
+
+  <!--
+    読み込み順に依存します:
+    config(データ) → audio → engine(エンティティ) → game(本体・起動)
+    ビルド不要。file:// で直接開いても動作します。
+  -->
+  <script src="src/config.js"></script>
+  <script src="src/audio.js"></script>
+  <script src="src/engine.js"></script>
+  <script src="src/game.js"></script>
+</body>
+</html>
