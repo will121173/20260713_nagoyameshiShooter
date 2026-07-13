@@ -1,0 +1,1071 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>名古屋メシ シューティング</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #000;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<canvas id="game-canvas" width="480" height="640"></canvas>
+<script>
+(function () {
+  'use strict';
+
+  const canvas = document.getElementById('game-canvas');
+  const ctx = canvas.getContext('2d');
+  const CANVAS_WIDTH = canvas.width;
+  const CANVAS_HEIGHT = canvas.height;
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function randomRange(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function circlesHit(a, b) {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    const r = a.hitRadius + b.hitRadius;
+    return dx * dx + dy * dy <= r * r;
+  }
+
+  // ==========================================================
+  // ランキング(localStorage)
+  // 保存形式: [{ initials, calorie, date }, ...] カロリー降順・最大10件。
+  // ==========================================================
+  const RANKING_STORAGE_KEY = 'nagoya_meshi_ranking';
+  const RANKING_MAX_ENTRIES = 10;
+
+  function loadRanking() {
+    try {
+      const raw = localStorage.getItem(RANKING_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function addRankingEntry(initials, calorie) {
+    const ranking = loadRanking();
+    ranking.push({ initials, calorie, date: new Date().toLocaleString() });
+    ranking.sort((a, b) => b.calorie - a.calorie);
+    const trimmed = ranking.slice(0, RANKING_MAX_ENTRIES);
+    try {
+      localStorage.setItem(RANKING_STORAGE_KEY, JSON.stringify(trimmed));
+    } catch (e) {
+      // localStorageが使えない環境でもゲーム進行は止めない
+    }
+    return trimmed;
+  }
+
+  // ==========================================================
+  // 効果音(Web Audio API によるコード合成)
+  // 自動再生ポリシー対策として AudioContext は最初のユーザー入力時に
+  // 生成/resume する。生成・再生の失敗がゲーム進行へ波及しないよう
+  // すべての操作を try/catch で保護する(音を出せない環境でも無害)。
+  // ==========================================================
+  let audioCtx = null;
+
+  function initAudio() {
+    try {
+      if (!audioCtx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        audioCtx = new AC();
+      }
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) {
+      audioCtx = null;
+    }
+  }
+
+  function playTone(startFreq, endFreq, duration, type, gainPeak, delay) {
+    if (!audioCtx) return;
+    try {
+      const t0 = audioCtx.currentTime + (delay || 0);
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(startFreq, t0);
+      if (endFreq !== startFreq) {
+        osc.frequency.exponentialRampToValueAtTime(Math.max(1, endFreq), t0 + duration);
+      }
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(gainPeak, t0 + duration * 0.15);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(t0);
+      osc.stop(t0 + duration + 0.02);
+    } catch (e) {
+      // 単発の再生失敗はゲーム進行に影響させない
+    }
+  }
+
+  function playShootSound() {
+    playTone(880, 1245, 0.07, 'square', 0.05, 0);
+  }
+
+  function playDefeatSound() {
+    playTone(659, 659, 0.1, 'triangle', 0.12, 0);
+    playTone(988, 988, 0.14, 'triangle', 0.11, 0.07);
+  }
+
+  function playHitSound() {
+    playTone(220, 55, 0.25, 'sawtooth', 0.16, 0);
+  }
+
+  // ==========================================================
+  // 自機・自弾パラメータ
+  // 当たり判定半径は「見た目の半径(size/2)の70%」とし、描画サイズより
+  // 一回り小さい判定にする(見た目に対してフェアな判定にするため)。
+  // ==========================================================
+  const HIT_RADIUS_RATIO = 0.7;
+
+  const PLAYER_SIZE = 40;
+  const PLAYER_SPEED = 300;
+  const PLAYER_HIT_RADIUS = (PLAYER_SIZE / 2) * HIT_RADIUS_RATIO;
+  const PLAYER_INVINCIBLE_DURATION = 2;
+  const PLAYER_BLINK_INTERVAL = 0.1;
+
+  const BULLET_SIZE = 20;
+  const BULLET_SPEED = 500;
+  const BULLET_HIT_RADIUS = (BULLET_SIZE / 2) * HIT_RADIUS_RATIO;
+  const BULLET_FIRE_INTERVAL = 1 / 5;
+
+  // ==========================================================
+  // 敵・敵弾パラメータ
+  // 種別ごとの見た目/HP/kcal/抽選重みは ENEMY_TYPES に集約する。
+  // weight は出現頻度の比(手羽先=高 : エビフライ=中 : ラーメン=低)。
+  // ==========================================================
+  const ENEMY_TYPES = {
+    tebasaki: { emoji: '🍗', size: 36, hp: 1, kcal: 200, weight: 6 },
+    ebifry:   { emoji: '🍤', size: 36, hp: 1, kcal: 350, weight: 3 },
+    ramen:    { emoji: '🍜', size: 44, hp: 3, kcal: 600, weight: 1 },
+  };
+
+  const TEBASAKI_FALL_SPEED = 55;
+  const TEBASAKI_SWAY_AMPLITUDE = 70;
+  const TEBASAKI_SWAY_FREQ = 2.2;
+  const TEBASAKI_SHOOT_INTERVAL = 2;
+
+  const EBIFRY_SPEED = 300;
+
+  const RAMEN_FALL_SPEED = 90;
+  const RAMEN_SHOOT_INTERVAL = 3;
+
+  const BONE_SIZE = 18;
+  const BONE_SPEED = 220;
+  const RED_SIZE = 16;
+  const RED_SPEED = 170;
+
+  // スポーン間隔は経過時間に対して線形に短くなる(RAMP_TIME で最小へ収束)。
+  const ENEMY_SPAWN_INTERVAL_START = 1.4;
+  const ENEMY_SPAWN_INTERVAL_MIN = 0.5;
+  const ENEMY_SPAWN_RAMP_TIME = 60;
+
+  const OFFSCREEN_MARGIN = 80;
+  const POPUP_DURATION = 0.9;
+  const POPUP_RISE_SPEED = 40;
+
+  const DEFEAT_EFFECT_DURATION = 0.3;
+  const DEFEAT_EFFECT_GROWTH = 1.9;
+  const HIT_FLASH_DURATION = 0.25;
+  const HIT_FLASH_MAX_ALPHA = 0.5;
+
+  // ==========================================================
+  // ボス:金のシャチホコ
+  // BOSS_APPEAR_TIME 秒経過で登場。登場すると updateEnemySpawning の
+  // game.boss ガードにより雑魚スポーンが自動停止する。
+  // 攻撃は BOSS_PATTERN_INTERVAL 秒ごとに A(自機狙い3way)/
+  // B(横一列・穴あき)を交互に発生させる。
+  // ==========================================================
+  const BOSS_APPEAR_TIME = 60;
+  const BOSS_SIZE = 80;
+  const BOSS_HP = 30;
+  const BOSS_HIT_RADIUS = (BOSS_SIZE / 2) * HIT_RADIUS_RATIO;
+  const BOSS_Y = 100;
+  const BOSS_SPEED = 130;
+  const BOSS_DEFEAT_KCAL = 3000;
+
+  const BOSS_PATTERN_INTERVAL = 2;
+  const BOSS_3WAY_SPREAD = 0.28;
+  const BOSS_BULLET_A_SIZE = 22;
+  const BOSS_BULLET_A_SPEED = 230;
+  const BOSS_BULLET_B_SIZE = 22;
+  const BOSS_BULLET_B_SPEED = 180;
+  const BOSS_RAIN_COLUMNS = 8;
+
+  // ==========================================================
+  // 状態機械
+  // 'title' | 'playing' | 'result' の3値を game.state が持つ。
+  // 各状態の update/draw は STATE_HANDLERS で束ねて分岐する。
+  // 後続タスクは各ハンドラの内部だけを拡張すればよい。
+  // ==========================================================
+  const GameState = {
+    TITLE: 'title',
+    PLAYING: 'playing',
+    RESULT: 'result',
+  };
+
+  const game = {
+    state: GameState.TITLE,
+    // 自機/敵/ボス/カロリー/残機/ランキング等の実データは
+    // 後続タスクでここに追加していく想定のプレースホルダ。
+    player: null,
+    enemies: [],
+    bullets: [],
+    enemyBullets: [],
+    popups: [],
+    effects: [],
+    boss: null,
+    hitFlashTimer: 0,
+    // リザルトへ遷移した理由。'clear'(ボス撃破) | 'gameover'(残機0) | null
+    resultReason: null,
+    // リザルト画面内のフェーズ。'initials'(イニシャル入力) | 'ranking'(結果表示) | null
+    resultPhase: null,
+    initials: ['A', 'A', 'A'],
+    initialsSlot: 0,
+    score: 0,
+    lives: 0,
+    elapsedTime: 0,
+    spawnTimer: 0,
+    ranking: [],
+  };
+
+  function resetGame() {
+    // ゲーム状態の初期値 = タイトル画面。各段階の実装者は
+    // 自分が追加したプレイデータの初期化をここに書き足すこと。
+    game.state = GameState.TITLE;
+    game.player = {
+      x: CANVAS_WIDTH / 2,
+      y: CANVAS_HEIGHT - 60,
+      size: PLAYER_SIZE,
+      hitRadius: PLAYER_HIT_RADIUS,
+      invincibleTimer: 0,
+      shootCooldown: 0,
+    };
+    game.enemies = [];
+    game.bullets = [];
+    game.enemyBullets = [];
+    game.popups = [];
+    game.effects = [];
+    game.boss = null;
+    game.hitFlashTimer = 0;
+    game.resultReason = null;
+    game.resultPhase = null;
+    game.initials = ['A', 'A', 'A'];
+    game.initialsSlot = 0;
+    game.score = 0;
+    game.lives = 3;
+    game.elapsedTime = 0;
+    game.spawnTimer = 0;
+  }
+
+  function enterResult() {
+    game.resultPhase = 'initials';
+    game.initials = ['A', 'A', 'A'];
+    game.initialsSlot = 0;
+  }
+
+  // ==========================================================
+  // 入力
+  // keys.up/down/left/right のようなbool値を移動処理が読むだけで
+  // 済む形にしておく。Enterは押した瞬間のみ true になる
+  // keys.enterPressed を用意し、フレーム終端で消費・リセットする。
+  // ==========================================================
+  const keys = {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+    enter: false,
+    enterPressed: false,
+    upPressed: false,
+    downPressed: false,
+  };
+
+  const KEY_MAP = {
+    ArrowUp: 'up', w: 'up', W: 'up',
+    ArrowDown: 'down', s: 'down', S: 'down',
+    ArrowLeft: 'left', a: 'left', A: 'left',
+    ArrowRight: 'right', d: 'right', D: 'right',
+    Enter: 'enter',
+  };
+
+  window.addEventListener('keydown', function (e) {
+    initAudio();
+    const target = KEY_MAP[e.key];
+    if (!target) return;
+    if (target === 'enter') {
+      if (!keys.enter) keys.enterPressed = true;
+      keys.enter = true;
+    } else {
+      // リザルトのイニシャル入力用。押した瞬間だけ1文字送るためのフラグ
+      if (target === 'up' && !keys.up) keys.upPressed = true;
+      if (target === 'down' && !keys.down) keys.downPressed = true;
+      keys[target] = true;
+    }
+  });
+
+  window.addEventListener('keyup', function (e) {
+    const target = KEY_MAP[e.key];
+    if (!target) return;
+    if (target === 'enter') {
+      keys.enter = false;
+    } else {
+      keys[target] = false;
+    }
+  });
+
+  // ==========================================================
+  // 自機・自弾
+  // 敵/ボス担当は当たり判定を計算したうえで hitPlayer() を呼ぶだけでよい。
+  // 残機減少・無敵タイマー開始・多重被弾防止はここで完結させる。
+  // ==========================================================
+  function updatePlayerMovement(dt) {
+    const player = game.player;
+    let dx = 0;
+    let dy = 0;
+    if (keys.up) dy -= 1;
+    if (keys.down) dy += 1;
+    if (keys.left) dx -= 1;
+    if (keys.right) dx += 1;
+    if (dx !== 0 && dy !== 0) {
+      // 斜め移動の速度が√2倍にならないよう正規化する
+      dx *= Math.SQRT1_2;
+      dy *= Math.SQRT1_2;
+    }
+    player.x = clamp(player.x + dx * PLAYER_SPEED * dt, 0, CANVAS_WIDTH);
+    player.y = clamp(player.y + dy * PLAYER_SPEED * dt, 0, CANVAS_HEIGHT);
+  }
+
+  function updatePlayerShooting(dt) {
+    const player = game.player;
+    player.shootCooldown -= dt;
+    if (player.shootCooldown > 0) return;
+    // 単純な代入ではなく加算で戻す。フレームレート変動で生じた余りを
+    // 次回に持ち越し、毎秒5発のペースがずれないようにする。
+    player.shootCooldown += BULLET_FIRE_INTERVAL;
+    game.bullets.push({
+      x: player.x,
+      y: player.y - player.size / 2,
+      size: BULLET_SIZE,
+      hitRadius: BULLET_HIT_RADIUS,
+      vy: -BULLET_SPEED,
+      owner: 'player',
+    });
+    playShootSound();
+  }
+
+  function updateBullets(dt) {
+    for (let i = game.bullets.length - 1; i >= 0; i--) {
+      const bullet = game.bullets[i];
+      bullet.y += bullet.vy * dt;
+      if (bullet.y < 0) game.bullets.splice(i, 1);
+    }
+  }
+
+  function updatePlayerInvincibility(dt) {
+    const player = game.player;
+    if (player.invincibleTimer > 0) {
+      player.invincibleTimer = Math.max(0, player.invincibleTimer - dt);
+    }
+  }
+
+  function hitPlayer() {
+    if (game.player.invincibleTimer > 0) return;
+    game.lives -= 1;
+    game.player.invincibleTimer = PLAYER_INVINCIBLE_DURATION;
+    game.hitFlashTimer = HIT_FLASH_DURATION;
+    playHitSound();
+  }
+
+  function drawPlayer(ctx) {
+    const player = game.player;
+    if (player.invincibleTimer > 0) {
+      // 一定間隔でfillTextを間引くだけの点滅表現
+      const blinkOn = Math.floor(player.invincibleTimer / PLAYER_BLINK_INTERVAL) % 2 === 0;
+      if (!blinkOn) return;
+    }
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `${player.size}px sans-serif`;
+    ctx.fillText('😋', player.x, player.y);
+  }
+
+  function drawBullets(ctx) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `${BULLET_SIZE}px sans-serif`;
+    for (const bullet of game.bullets) {
+      ctx.fillText('🍚', bullet.x, bullet.y);
+    }
+  }
+
+  function drawHud(ctx) {
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText(`摂取カロリー: ${game.score}kcal`, 12, 12);
+
+    ctx.font = '20px sans-serif';
+    ctx.fillText('😋'.repeat(Math.max(0, game.lives)), 12, 38);
+  }
+
+  // ==========================================================
+  // 敵・敵弾・ポップアップ
+  // 敵は type で種別を識別し、種別ごとの update 関数で移動/攻撃する。
+  // ボス出現中(game.boss が真値)は雑魚を一切スポーンしない。
+  // ==========================================================
+  function pickEnemyType() {
+    const types = Object.keys(ENEMY_TYPES);
+    let total = 0;
+    for (const t of types) total += ENEMY_TYPES[t].weight;
+    let r = Math.random() * total;
+    for (const t of types) {
+      r -= ENEMY_TYPES[t].weight;
+      if (r < 0) return t;
+    }
+    return types[0];
+  }
+
+  function currentSpawnInterval() {
+    const t = clamp(game.elapsedTime / ENEMY_SPAWN_RAMP_TIME, 0, 1);
+    return ENEMY_SPAWN_INTERVAL_START +
+      (ENEMY_SPAWN_INTERVAL_MIN - ENEMY_SPAWN_INTERVAL_START) * t;
+  }
+
+  function spawnEnemy() {
+    const type = pickEnemyType();
+    const def = ENEMY_TYPES[type];
+    const enemy = {
+      type,
+      emoji: def.emoji,
+      size: def.size,
+      hitRadius: (def.size / 2) * HIT_RADIUS_RATIO,
+      hp: def.hp,
+      kcal: def.kcal,
+      age: 0,
+      x: 0,
+      y: -def.size,
+    };
+
+    if (type === 'tebasaki') {
+      enemy.baseX = randomRange(TEBASAKI_SWAY_AMPLITUDE, CANVAS_WIDTH - TEBASAKI_SWAY_AMPLITUDE);
+      enemy.x = enemy.baseX;
+      enemy.vy = TEBASAKI_FALL_SPEED;
+      enemy.shootTimer = TEBASAKI_SHOOT_INTERVAL;
+    } else if (type === 'ebifry') {
+      const fromLeft = Math.random() < 0.5;
+      enemy.x = fromLeft
+        ? randomRange(0, CANVAS_WIDTH * 0.35)
+        : randomRange(CANVAS_WIDTH * 0.65, CANVAS_WIDTH);
+      const spread = randomRange(0.2, 0.5);
+      const dir = fromLeft ? 1 : -1;
+      enemy.vx = Math.sin(spread) * dir * EBIFRY_SPEED;
+      enemy.vy = Math.cos(spread) * EBIFRY_SPEED;
+    } else {
+      enemy.x = randomRange(def.size, CANVAS_WIDTH - def.size);
+      enemy.vy = RAMEN_FALL_SPEED;
+      enemy.targetY = randomRange(70, 150);
+      enemy.stopped = false;
+      enemy.shootTimer = RAMEN_SHOOT_INTERVAL;
+    }
+
+    game.enemies.push(enemy);
+  }
+
+  function updateEnemySpawning(dt) {
+    if (game.boss) return;
+    game.spawnTimer -= dt;
+    if (game.spawnTimer > 0) return;
+    game.spawnTimer += currentSpawnInterval();
+    spawnEnemy();
+  }
+
+  function fireBone(enemy) {
+    const angle = Math.atan2(game.player.y - enemy.y, game.player.x - enemy.x);
+    game.enemyBullets.push({
+      x: enemy.x,
+      y: enemy.y,
+      size: BONE_SIZE,
+      hitRadius: (BONE_SIZE / 2) * HIT_RADIUS_RATIO,
+      vx: Math.cos(angle) * BONE_SPEED,
+      vy: Math.sin(angle) * BONE_SPEED,
+      emoji: '🦴',
+    });
+  }
+
+  function fireRadial(enemy) {
+    for (let k = 0; k < 8; k++) {
+      const angle = (Math.PI * 2 / 8) * k;
+      game.enemyBullets.push({
+        x: enemy.x,
+        y: enemy.y,
+        size: RED_SIZE,
+        hitRadius: (RED_SIZE / 2) * HIT_RADIUS_RATIO,
+        vx: Math.cos(angle) * RED_SPEED,
+        vy: Math.sin(angle) * RED_SPEED,
+        emoji: '🔴',
+      });
+    }
+  }
+
+  function updateTebasaki(enemy, dt) {
+    enemy.y += enemy.vy * dt;
+    enemy.x = enemy.baseX + Math.sin(enemy.age * TEBASAKI_SWAY_FREQ) * TEBASAKI_SWAY_AMPLITUDE;
+    enemy.shootTimer -= dt;
+    if (enemy.shootTimer <= 0) {
+      enemy.shootTimer += TEBASAKI_SHOOT_INTERVAL;
+      if (enemy.y > 0) fireBone(enemy);
+    }
+  }
+
+  function updateEbifry(enemy, dt) {
+    enemy.x += enemy.vx * dt;
+    enemy.y += enemy.vy * dt;
+  }
+
+  function updateRamen(enemy, dt) {
+    if (!enemy.stopped) {
+      enemy.y += enemy.vy * dt;
+      if (enemy.y >= enemy.targetY) {
+        enemy.y = enemy.targetY;
+        enemy.stopped = true;
+      }
+      return;
+    }
+    enemy.shootTimer -= dt;
+    if (enemy.shootTimer <= 0) {
+      enemy.shootTimer += RAMEN_SHOOT_INTERVAL;
+      fireRadial(enemy);
+    }
+  }
+
+  function isOutOfBounds(obj) {
+    return (
+      obj.x < -OFFSCREEN_MARGIN ||
+      obj.x > CANVAS_WIDTH + OFFSCREEN_MARGIN ||
+      obj.y > CANVAS_HEIGHT + OFFSCREEN_MARGIN ||
+      obj.y < -OFFSCREEN_MARGIN
+    );
+  }
+
+  function updateEnemies(dt) {
+    for (let i = game.enemies.length - 1; i >= 0; i--) {
+      const enemy = game.enemies[i];
+      enemy.age += dt;
+      if (enemy.type === 'tebasaki') updateTebasaki(enemy, dt);
+      else if (enemy.type === 'ebifry') updateEbifry(enemy, dt);
+      else updateRamen(enemy, dt);
+
+      if (isOutOfBounds(enemy)) {
+        game.enemies.splice(i, 1);
+        continue;
+      }
+      // 接触では敵を消さず被弾のみ(「撃つ=食べる」コンセプト)
+      if (circlesHit(enemy, game.player)) hitPlayer();
+    }
+  }
+
+  function updateEnemyBullets(dt) {
+    for (let i = game.enemyBullets.length - 1; i >= 0; i--) {
+      const b = game.enemyBullets[i];
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      if (isOutOfBounds(b)) {
+        game.enemyBullets.splice(i, 1);
+        continue;
+      }
+      if (circlesHit(b, game.player)) {
+        hitPlayer();
+        game.enemyBullets.splice(i, 1);
+      }
+    }
+  }
+
+  function defeatEnemy(enemy, index) {
+    playDefeatSound();
+    spawnDefeatEffect(enemy.emoji, enemy.x, enemy.y, enemy.size);
+    game.enemies.splice(index, 1);
+    game.score += enemy.kcal;
+    game.popups.push({
+      x: enemy.x,
+      y: enemy.y,
+      text: '完食!',
+      timer: POPUP_DURATION,
+    });
+  }
+
+  function resolvePlayerBulletHits() {
+    for (let i = game.enemies.length - 1; i >= 0; i--) {
+      const enemy = game.enemies[i];
+      for (let j = game.bullets.length - 1; j >= 0; j--) {
+        const bullet = game.bullets[j];
+        if (!circlesHit(enemy, bullet)) continue;
+        game.bullets.splice(j, 1);
+        enemy.hp -= 1;
+        if (enemy.hp <= 0) {
+          defeatEnemy(enemy, i);
+          break;
+        }
+      }
+    }
+  }
+
+  function updatePopups(dt) {
+    for (let i = game.popups.length - 1; i >= 0; i--) {
+      const p = game.popups[i];
+      p.timer -= dt;
+      p.y -= POPUP_RISE_SPEED * dt;
+      if (p.timer <= 0) game.popups.splice(i, 1);
+    }
+  }
+
+  function drawEnemies(ctx) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const enemy of game.enemies) {
+      ctx.font = `${enemy.size}px sans-serif`;
+      ctx.fillText(enemy.emoji, enemy.x, enemy.y);
+    }
+  }
+
+  function drawEnemyBullets(ctx) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const b of game.enemyBullets) {
+      ctx.font = `${b.size}px sans-serif`;
+      ctx.fillText(b.emoji, b.x, b.y);
+    }
+  }
+
+  function drawPopups(ctx) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 16px sans-serif';
+    for (const p of game.popups) {
+      const alpha = clamp(p.timer / POPUP_DURATION, 0, 1);
+      ctx.fillStyle = `rgba(255, 230, 120, ${alpha})`;
+      ctx.fillText(p.text, p.x, p.y);
+    }
+  }
+
+  // ==========================================================
+  // 撃破エフェクト・被弾フラッシュ
+  // エフェクトは倒した絵文字を残り時間に応じて拡大しつつ透明化する。
+  // どちらも時間経過で自然消滅し、配列が肥大化しない。
+  // ==========================================================
+  function spawnDefeatEffect(emoji, x, y, size) {
+    game.effects.push({
+      emoji,
+      x,
+      y,
+      size,
+      timer: DEFEAT_EFFECT_DURATION,
+      duration: DEFEAT_EFFECT_DURATION,
+    });
+  }
+
+  function updateEffects(dt) {
+    for (let i = game.effects.length - 1; i >= 0; i--) {
+      const e = game.effects[i];
+      e.timer -= dt;
+      if (e.timer <= 0) game.effects.splice(i, 1);
+    }
+  }
+
+  function drawEffects(ctx) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const e of game.effects) {
+      const progress = clamp(1 - e.timer / e.duration, 0, 1);
+      const scale = 1 + progress * (DEFEAT_EFFECT_GROWTH - 1);
+      ctx.save();
+      ctx.globalAlpha = clamp(e.timer / e.duration, 0, 1);
+      ctx.font = `${e.size * scale}px sans-serif`;
+      ctx.fillText(e.emoji, e.x, e.y);
+      ctx.restore();
+    }
+  }
+
+  function updateHitFlash(dt) {
+    if (game.hitFlashTimer > 0) {
+      game.hitFlashTimer = Math.max(0, game.hitFlashTimer - dt);
+    }
+  }
+
+  function drawHitFlash(ctx) {
+    if (game.hitFlashTimer <= 0) return;
+    const alpha = clamp(game.hitFlashTimer / HIT_FLASH_DURATION, 0, 1) * HIT_FLASH_MAX_ALPHA;
+    ctx.fillStyle = `rgba(220, 0, 0, ${alpha})`;
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+  }
+
+  // ==========================================================
+  // ボス
+  // 出現時に場面をボス戦へ集中させるため既存の雑魚・敵弾をクリアする。
+  // 弾は既存の game.enemyBullets へ push すれば updateEnemyBullets が
+  // 移動・自機被弾・画面外削除をまとめて処理する。
+  // ==========================================================
+  function spawnBoss() {
+    game.enemies = [];
+    game.enemyBullets = [];
+    game.boss = {
+      x: CANVAS_WIDTH / 2,
+      y: BOSS_Y,
+      size: BOSS_SIZE,
+      hitRadius: BOSS_HIT_RADIUS,
+      hp: BOSS_HP,
+      vx: BOSS_SPEED,
+      pattern: 'A',
+      patternTimer: BOSS_PATTERN_INTERVAL,
+    };
+  }
+
+  function fireBoss3way() {
+    const boss = game.boss;
+    const base = Math.atan2(game.player.y - boss.y, game.player.x - boss.x);
+    for (let k = -1; k <= 1; k++) {
+      const angle = base + k * BOSS_3WAY_SPREAD;
+      game.enemyBullets.push({
+        x: boss.x,
+        y: boss.y,
+        size: BOSS_BULLET_A_SIZE,
+        hitRadius: (BOSS_BULLET_A_SIZE / 2) * HIT_RADIUS_RATIO,
+        vx: Math.cos(angle) * BOSS_BULLET_A_SPEED,
+        vy: Math.sin(angle) * BOSS_BULLET_A_SPEED,
+        emoji: '🟠',
+      });
+    }
+  }
+
+  function fireBossRain() {
+    const spacing = CANVAS_WIDTH / BOSS_RAIN_COLUMNS;
+    const gap = Math.floor(Math.random() * BOSS_RAIN_COLUMNS);
+    for (let k = 0; k < BOSS_RAIN_COLUMNS; k++) {
+      if (k === gap) continue;
+      game.enemyBullets.push({
+        x: spacing * (k + 0.5),
+        y: -BOSS_BULLET_B_SIZE,
+        size: BOSS_BULLET_B_SIZE,
+        hitRadius: (BOSS_BULLET_B_SIZE / 2) * HIT_RADIUS_RATIO,
+        vx: 0,
+        vy: BOSS_BULLET_B_SPEED,
+        emoji: '🔵',
+      });
+    }
+  }
+
+  function defeatBoss() {
+    playDefeatSound();
+    spawnDefeatEffect('🐟', game.boss.x, game.boss.y, game.boss.size);
+    game.score += BOSS_DEFEAT_KCAL;
+    game.boss = null;
+    game.resultReason = 'clear';
+    enterResult();
+    game.state = GameState.RESULT;
+  }
+
+  function updateBoss(dt) {
+    const boss = game.boss;
+    boss.x += boss.vx * dt;
+    const half = boss.size / 2;
+    if (boss.x < half) {
+      boss.x = half;
+      boss.vx = Math.abs(boss.vx);
+    } else if (boss.x > CANVAS_WIDTH - half) {
+      boss.x = CANVAS_WIDTH - half;
+      boss.vx = -Math.abs(boss.vx);
+    }
+
+    boss.patternTimer -= dt;
+    if (boss.patternTimer <= 0) {
+      boss.patternTimer += BOSS_PATTERN_INTERVAL;
+      if (boss.pattern === 'A') fireBoss3way();
+      else fireBossRain();
+      boss.pattern = boss.pattern === 'A' ? 'B' : 'A';
+    }
+
+    // 接触では消えず被弾のみ(雑魚と同じ扱い)
+    if (circlesHit(boss, game.player)) hitPlayer();
+  }
+
+  function resolveBossHits() {
+    const boss = game.boss;
+    for (let j = game.bullets.length - 1; j >= 0; j--) {
+      const bullet = game.bullets[j];
+      if (!circlesHit(boss, bullet)) continue;
+      game.bullets.splice(j, 1);
+      boss.hp -= 1;
+      if (boss.hp <= 0) {
+        defeatBoss();
+        return;
+      }
+    }
+  }
+
+  function drawBoss(ctx) {
+    const boss = game.boss;
+    ctx.save();
+
+    const glow = ctx.createRadialGradient(boss.x, boss.y, 0, boss.x, boss.y, boss.size);
+    glow.addColorStop(0, 'rgba(255, 215, 0, 0.85)');
+    glow.addColorStop(0.6, 'rgba(255, 200, 40, 0.35)');
+    glow.addColorStop(1, 'rgba(255, 200, 40, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(boss.x, boss.y, boss.size, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `${boss.size}px sans-serif`;
+    ctx.shadowColor = 'rgba(255, 215, 0, 0.9)';
+    ctx.shadowBlur = 24;
+    ctx.fillText('🐟', boss.x, boss.y);
+    ctx.restore();
+
+    const barWidth = boss.size;
+    const barHeight = 6;
+    const barX = boss.x - barWidth / 2;
+    const barY = boss.y - boss.size / 2 - 14;
+    const ratio = clamp(boss.hp / BOSS_HP, 0, 1);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(barX, barY, barWidth, barHeight);
+    ctx.fillStyle = '#ff5555';
+    ctx.fillRect(barX, barY, barWidth * ratio, barHeight);
+  }
+
+  // ==========================================================
+  // 状態ごとの update/draw
+  // ==========================================================
+  function updateTitle(dt) {
+    if (keys.enterPressed) {
+      // プレイ再開時に前回のプレイ状態を残さない(リプレイ時の完全リセット要件)
+      resetGame();
+      game.state = GameState.PLAYING;
+    }
+  }
+
+  function drawRankingList(ctx, centerX, startY, ranking) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillText('ランキング TOP10', centerX, startY);
+
+    ctx.font = '14px sans-serif';
+    if (ranking.length === 0) {
+      ctx.fillText('まだ記録がありません', centerX, startY + 22);
+      return;
+    }
+    for (let i = 0; i < ranking.length; i++) {
+      const entry = ranking[i];
+      ctx.fillText(`${i + 1}. ${entry.initials}  ${entry.calorie}kcal`, centerX, startY + 22 + i * 18);
+    }
+  }
+
+  function drawTitle(ctx) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 30px sans-serif';
+    ctx.fillText('名古屋メシ シューティング', CANVAS_WIDTH / 2, 70);
+
+    ctx.font = '14px sans-serif';
+    ctx.fillText('移動: 矢印キー / WASD', CANVAS_WIDTH / 2, 115);
+    ctx.fillText('弾は自動発射', CANVAS_WIDTH / 2, 136);
+
+    drawRankingList(ctx, CANVAS_WIDTH / 2, 175, loadRanking());
+
+    ctx.font = '18px sans-serif';
+    ctx.fillText('Press Enter to Start', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 40);
+  }
+
+  function updatePlaying(dt) {
+    updatePlayerMovement(dt);
+    updatePlayerShooting(dt);
+    updatePlayerInvincibility(dt);
+    updateBullets(dt);
+
+    game.elapsedTime += dt;
+    if (!game.boss && game.elapsedTime >= BOSS_APPEAR_TIME) spawnBoss();
+
+    updateEnemySpawning(dt);
+    updateEnemies(dt);
+    if (game.boss) updateBoss(dt);
+    updateEnemyBullets(dt);
+    resolvePlayerBulletHits();
+    if (game.boss) resolveBossHits();
+    updatePopups(dt);
+    updateEffects(dt);
+    updateHitFlash(dt);
+
+    // defeatBoss は既に RESULT へ遷移させるため、ここでは残機切れのみ判定する
+    if (game.state === GameState.PLAYING && game.lives <= 0) {
+      game.resultReason = 'gameover';
+      enterResult();
+      game.state = GameState.RESULT;
+    }
+  }
+
+  function drawPlaying(ctx) {
+    drawEnemies(ctx);
+    if (game.boss) drawBoss(ctx);
+    drawEnemyBullets(ctx);
+    drawBullets(ctx);
+    drawPlayer(ctx);
+    drawEffects(ctx);
+    drawPopups(ctx);
+    drawHud(ctx);
+    drawHitFlash(ctx);
+  }
+
+  function cycleLetter(letter, delta) {
+    const code = letter.charCodeAt(0) - 65;
+    return String.fromCharCode(65 + ((code + delta + 26) % 26));
+  }
+
+  function updateResult(dt) {
+    if (game.resultPhase === 'initials') {
+      if (keys.upPressed) {
+        game.initials[game.initialsSlot] = cycleLetter(game.initials[game.initialsSlot], 1);
+      }
+      if (keys.downPressed) {
+        game.initials[game.initialsSlot] = cycleLetter(game.initials[game.initialsSlot], -1);
+      }
+      if (keys.enterPressed) {
+        game.initialsSlot += 1;
+        if (game.initialsSlot >= game.initials.length) {
+          addRankingEntry(game.initials.join(''), game.score);
+          game.resultPhase = 'ranking';
+        }
+      }
+      return;
+    }
+
+    if (keys.enterPressed) {
+      resetGame();
+      game.state = GameState.TITLE;
+    }
+  }
+
+  function drawInitialsEntry(ctx) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '15px sans-serif';
+    ctx.fillText('イニシャルを入力 (↑↓で文字選択 / Enterで確定)', CANVAS_WIDTH / 2, 180);
+
+    const spacing = 56;
+    const startX = CANVAS_WIDTH / 2 - spacing;
+    for (let i = 0; i < game.initials.length; i++) {
+      const x = startX + spacing * i;
+      const active = i === game.initialsSlot;
+      ctx.fillStyle = active ? '#ffe678' : '#ffffff';
+      if (active) {
+        ctx.font = '16px sans-serif';
+        ctx.fillText('▲', x, 205);
+        ctx.fillText('▼', x, 285);
+      }
+      ctx.font = 'bold 40px sans-serif';
+      ctx.fillText(game.initials[i], x, 245);
+    }
+  }
+
+  function drawResult(ctx) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 22px sans-serif';
+    const message = game.resultReason === 'clear' ? '完食!!ごちそうさまでした!' : 'ゲームオーバー';
+    ctx.fillText(message, CANVAS_WIDTH / 2, 90);
+
+    ctx.font = 'bold 26px sans-serif';
+    ctx.fillText(`最終摂取カロリー: ${game.score}kcal`, CANVAS_WIDTH / 2, 130);
+
+    if (game.resultPhase === 'initials') {
+      drawInitialsEntry(ctx);
+      return;
+    }
+
+    drawRankingList(ctx, CANVAS_WIDTH / 2, 175, loadRanking());
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '18px sans-serif';
+    ctx.fillText('Press Enter', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 40);
+  }
+
+  const STATE_HANDLERS = {
+    [GameState.TITLE]: { update: updateTitle, draw: drawTitle },
+    [GameState.PLAYING]: { update: updatePlaying, draw: drawPlaying },
+    [GameState.RESULT]: { update: updateResult, draw: drawResult },
+  };
+
+  function update(dt) {
+    STATE_HANDLERS[game.state].update(dt);
+    keys.enterPressed = false;
+    keys.upPressed = false;
+    keys.downPressed = false;
+  }
+
+  function draw(ctx) {
+    drawBackground(ctx);
+    STATE_HANDLERS[game.state].draw(ctx);
+  }
+
+  function drawBackground(ctx) {
+    const gradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+    gradient.addColorStop(0, '#050014');
+    gradient.addColorStop(1, '#1a1a4a');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+  }
+
+  // ==========================================================
+  // メインループ
+  // ==========================================================
+  let lastTimestamp = null;
+
+  function loop(timestamp) {
+    if (lastTimestamp === null) lastTimestamp = timestamp;
+    const dt = Math.min((timestamp - lastTimestamp) / 1000, 0.1);
+    lastTimestamp = timestamp;
+
+    update(dt);
+    draw(ctx);
+
+    requestAnimationFrame(loop);
+  }
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
