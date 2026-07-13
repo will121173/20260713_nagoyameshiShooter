@@ -1,0 +1,11 @@
+{
+  "name": "みそかつリング",
+  "bulletEmoji": "🍖",
+  "aim": "fixed",
+  "intervalMs": 800,
+  "speed": 150,
+  "count": 24,
+  "spreadDeg": 360,
+  "baseAngleDeg": 90,
+  "rotatePerShotDeg": 15
+}

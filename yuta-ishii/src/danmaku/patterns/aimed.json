@@ -1,0 +1,9 @@
+{
+  "name": "てばさき三連",
+  "bulletEmoji": "🍗",
+  "aim": "aimed",
+  "intervalMs": 200,
+  "speed": 260,
+  "count": 3,
+  "spreadDeg": 30
+}

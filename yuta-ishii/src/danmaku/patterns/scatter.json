@@ -1,0 +1,11 @@
+{
+  "name": "えびふりゃー乱舞",
+  "bulletEmoji": "🍤",
+  "aim": "random",
+  "intervalMs": 80,
+  "speed": 120,
+  "speedMax": 320,
+  "count": 2,
+  "spreadDeg": 90,
+  "baseAngleDeg": 90
+}

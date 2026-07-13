@@ -1,0 +1,11 @@
+{
+  "name": "全部のせ(負荷テスト)",
+  "bulletEmoji": "🍜",
+  "aim": "fixed",
+  "intervalMs": 250,
+  "speed": 100,
+  "count": 48,
+  "spreadDeg": 360,
+  "baseAngleDeg": 90,
+  "rotatePerShotDeg": 7
+}
